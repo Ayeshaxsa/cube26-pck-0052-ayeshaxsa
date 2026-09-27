@@ -46,3 +46,7 @@ class PackVerificationResult(BaseModel):
     checks: list[ItemCheck]
     decision: OperationalDecision
     reason: str
+
+class VisionResponse(BaseModel):
+    items: list[ItemObservation]
+    image_quality: ObservationStatus
