@@ -5,6 +5,7 @@ from app.schemas.pack import (
     ItemObservation,
     OperationalDecision,
     PackVerificationResult,
+    VerificationStatus,
 )
 
 def verify_pack(
@@ -83,14 +84,17 @@ def verify_pack(
     )
 
     if has_uncertain:
+        verification_status = VerificationStatus.UNCERTAIN
         decision = OperationalDecision.STOP_AND_FIX
         reason = "Verification is uncertain and requires human review."
 
     elif has_failure:
+        verification_status = VerificationStatus.VERIFIED
         decision = OperationalDecision.STOP_AND_FIX
         reason = "One or more packing checks failed."
 
     else:
+        verification_status = VerificationStatus.VERIFIED
         decision = OperationalDecision.SEAL
         reason = "All expected items and quantities were verified."
 
@@ -98,6 +102,7 @@ def verify_pack(
         expected_items=expected_items,
         observed_items=observed_items,
         checks=checks,
+        verification_status=verification_status,
         decision=decision,
         reason=reason,
     )

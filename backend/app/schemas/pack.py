@@ -39,14 +39,23 @@ class ItemCheck(BaseModel):
     status: CheckStatus
     reason: str
 
+class VerificationStatus(str, Enum):
+    VERIFIED = "verified"
+    UNCERTAIN = "uncertain"
+    PENDING = "pending"
 
 class PackVerificationResult(BaseModel):
     expected_items: list[ExpectedItem]
     observed_items: list[ItemObservation]
     checks: list[ItemCheck]
+    verification_status: VerificationStatus
     decision: OperationalDecision
     reason: str
 
 class VisionResponse(BaseModel):
     items: list[ItemObservation]
     image_quality: ObservationStatus
+
+class VerificationRequest(BaseModel):
+    order_lines: str
+    image_path: str

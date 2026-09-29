@@ -6,8 +6,7 @@ from app.schemas.pack import (
     OperationalDecision,
 )
 from app.services.verifier import verify_pack
-
-
+# used for testing the verification logic without relying on the vision model
 def test_correct_order():
     expected = [
         ExpectedItem(sku="TSHIRT-BLK", quantity=1),
