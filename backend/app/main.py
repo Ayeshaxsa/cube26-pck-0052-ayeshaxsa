@@ -22,6 +22,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
+        "https://cube26-pck-0052-ayeshaxsa.vercel.app/"
     ],
     allow_credentials=True,
     allow_methods=["*"],
