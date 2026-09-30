@@ -1,182 +1,681 @@
-# Cube Buildathon · 03 · Pack Manager
+# 📦 Pack Manager
 
-**Commerce Context stream · Round 2 · Individual Build**
+### AI-powered outbound packing verification
 
-> Five agents, one unit, one record that follows it.
-> A physical product arrives, gets prepped, gets shipped, comes back. At every step a person makes a fast judgment that nobody records. **You build the agent that makes one of those judgments, and leaves proof.**
+Pack Manager is an AI-assisted packing verification system that checks an open package against the customer's expected order **before the package is sealed**.
 
-**New here? Read these first:**
+The system combines computer vision with deterministic verification logic to identify:
 
-1. [`GITHUB-GUIDE.md`](GITHUB-GUIDE.md) explains how to fork the repository, set it up, build and push your work.
-2. [`RULES.md`](RULES.md) covers the repository and engineering rules.
+* ✅ Correct items
+* ❌ Missing items
+* ❌ Unexpected/extra items
+* ❌ Wrong quantities
+* ⚠️ Uncertain visual observations
+* ⏳ Failed AI verification requiring human review
+
+The final operational decision is either:
+
+> **SEAL** — all required items were verified
+
+or
+
+> **STOP & FIX** — something is missing, incorrect, uncertain, or requires review
 
 ---
 
-## Your problem statement: Pack Manager
+## 🎯 Problem
 
-|                              |                                                                                                                 |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| **Position in the chain**    | Step 3 of 5. Outbound to buyer.                                                                                 |
-| **Customer**                 | Seller or 3PL packing outbound orders                                                                           |
-| **What gets recorded**       | Contents at seal                                                                                                |
-| **Who consumes your output** | Returns Manager (what was actually sent) and Recovery Manager (buyer disputes, empty-box and wrong-item claims) |
+Packing mistakes are expensive.
 
-A picker assembles an order and closes the box. If the wrong item or quantity goes in, the customer gets a mis-ship: a refund, a return, a replacement shipment and often the review. Nobody checks, because checking every box by hand costs more than the mis-ships do.
+A warehouse operator may accidentally:
 
-**What the agent returns, from a photograph of the open box before it is sealed:**
+* Pick the wrong SKU
+* Forget an item
+* Pick the wrong quantity
+* Add an unexpected item
+* Seal a package when the visual evidence is unclear
 
-* Every item present, matched against the order lines
-* Quantities correct per line
-* Nothing extra in the box
-* A verdict: seal it, or stop and fix
+Traditional workflows often depend on manual checking immediately before shipment.
 
-> **Know your customer's limits.** This only exists for merchant-fulfilled and 3PL orders. If a seller is fully FBA, Amazon packs the box and there is nothing to verify. That narrows your customer more than the other statements.
-
-> **Be honest about competition.** Three funded companies already sell pack verification into large distribution centers. You will not out-feature them in two weeks. Your question is whether it can work for a seller with no fixed station and no hardware budget, which is a customer they do not call on.
-
-### The chain you are part of
+Pack Manager adds an AI-assisted verification step:
 
 ```text
- Supplier delivery      Inbound to Amazon     Outbound to buyer     Customer return        Money back
- ┌──────────────┐      ┌──────────────┐      ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
- │ 01 Receiving │ ───▶ │ 02 Prep      │ ───▶ │ 03 Pack      │ ───▶ │ 04 Returns   │      │ 05 Recovery  │
- │ condition on │      │ compliance   │      │ contents at  │      │ condition &  │      │ reads all    │
- │ arrival      │      │ proof        │      │ seal         │      │ disposition  │      │ four → claim │
- └──────┬───────┘      └──────┬───────┘      └──────┬───────┘      └──────┬───────┘      └──────▲───────┘
-        └─────────────────────┴─────────────────────┴─────────────────────┴─────────────────────┘
+Open package
+     ↓
+Take photo
+     ↓
+AI identifies visible products
+     ↓
+Compare against order
+     ↓
+Generate evidence
+     ↓
+SEAL / STOP & FIX
 ```
 
-The first four are the same machine: a camera, a model, and a decision bound to a record. What changes is the ruleset, the buyer and the moment. The fifth has no camera. It turns the other four's records into a claim.
-
-Your output has to be usable by another pod. That's deliberate, and it's scored.
-
 ---
 
-## Reference data
+# 🧠 How It Works
 
-`data/` holds a **dummy** CSV for reference while you design and build. Its columns and meanings are listed in [`data/README.md`](data/README.md).
-
-**The data is synthetic.** The SKUs, ASINs, FNSKUs, orders, suppliers, operators and amounts are all invented. The requirement flags and fee amounts are **not** Amazon's real rules or fees. Engineering rule 5 applies: look the authoritative rule up. The `photo_refs` paths are placeholders, and no images ship with this repo. Your fixtures and eval set are yours to capture.
-
-All five buildathon repos share the same `unit_id` values (`UNIT-0001` … `UNIT-0100`). You can follow one unit from receiving through recovery, the same way the real records will be joined. In the sample, each unit takes one route: **FBA** (prep, then Amazon ships it and charges fees) or **merchant-fulfilled / 3PL** (the seller packs it). So a unit has a Prep record or a Pack record, never both.
-
----
-
-## How this works
-
-You have a defined problem statement and a repository to build from. Real products are built backwards from the customer and forwards through the evidence. You should understand the customer and the operational workflow before you write code, then build and measure whether the solution works.
-
-Your goal is to turn the Pack Manager problem into a working, measurable agent.
-
-### What you're given
-
-* This problem statement
-* A domain brief covering the real economics, fee structures and what a working day in a warehouse looks like *(shared by the organisers)*
-* The engineering rules in [`RULES.md`](RULES.md)
-* Repository sample data and supporting resources
-* Any additional build resources shared by the organisers
-
-### What you produce
-
-Build your solution in **your own GitHub fork**.
-
-Your final Round 2 submission should include:
-
-* A working Pack Manager
-* An `README.md` explaining your solution, setup, assumptions and limitations
-* An `ARCHITECTURE.md`
-* An eval report/results with numbers and named failure modes
-* A demo video
-* A deployment URL, where applicable
-* Your mandatory LinkedIn post URL
-
-## Build and submission flow
+Pack Manager follows a simple three-stage architecture:
 
 ```text
-Understand
-    ↓
-Build
-    ↓
-Test
-    ↓
-Evaluate
-    ↓
-Document
-    ↓
-Demo / Deploy
-    ↓
-Submit
+              ┌──────────────────┐
+              │   Package Photo  │
+              └────────┬─────────┘
+                       ↓
+              ┌──────────────────┐
+              │ Vision Inspection│
+              │      AI          │
+              └────────┬─────────┘
+                       ↓
+              ┌──────────────────┐
+              │   Observations   │
+              │ SKU + quantity   │
+              │ + evidence       │
+              └────────┬─────────┘
+                       ↓
+              ┌──────────────────┐
+              │ Deterministic    │
+              │ Verification     │
+              └────────┬─────────┘
+                       ↓
+          ┌────────────┴────────────┐
+          ↓                         ↓
+       VERIFIED                  UNCERTAIN
+          ↓                         ↓
+     ┌────┴────┐              STOP & FIX
+     ↓         ↓
+   MATCH     MISMATCH
+     ↓         ↓
+   SEAL    STOP & FIX
 ```
 
-Round 2 is an **individual build**.
+The AI is responsible for **visual observation**.
 
-The official build phase begins on **25 September 2026 at 9:00 AM IST**.
+The application code is responsible for the **final verification decision**.
 
-Submissions open from **27 September 2026**.
-
-The final submission deadline is **1 October 2026 at 6:00 PM IST**.
-
-The submission form closes permanently at the deadline. **There is no resubmission.**
-
-All code commits forming your Round 2 submission must be made during the authorised build phase. Do not continue making Round 2 code changes after the build phase ends.
-
-## What we're being straight with you about
-
-* **The core assumption is untested.** Nobody knows yet whether vision models can identify products and verify box contents reliably across long-tail catalogues without per-SKU training. Finding out that it doesn't hold, and documenting that clearly, counts as a useful outcome.
-* **Nobody has spoken to a customer yet.** If you can get a real prep center or seller on a call, ask them to rank the five problems by urgency. Don't ask whether they'd buy what you're building.
-* **The background documents disagree in places.** A contradiction is a finding. Raise it as an Issue labelled `finding`.
+This separation prevents the vision model from independently deciding whether an order should ship.
 
 ---
 
-## Evaluation
-
-Your Round 2 submission is evaluated out of **100 points**:
-
-| Criterion                                    |  Points |
-| -------------------------------------------- | ------: |
-| Problem Understanding & Solution Relevance   |  **15** |
-| Agent Functionality & Decision Quality       |  **25** |
-| Evaluation, Accuracy & Uncertainty Handling  |  **25** |
-| Evidence, Traceability & Engineering Quality |  **20** |
-| UX, Demo & Documentation                     |  **15** |
-| **TOTAL**                                    | **100** |
-
-For the vision-based portions of the Pack Manager, use an appropriate unseen/held-out evaluation set and report your methodology, results, false positives, false negatives, `UNCERTAIN` cases and failure modes.
-
----
-
-## Evidence and decision traceability
-
-Your Pack Manager should leave evidence behind for its decisions.
-
-At minimum, the workflow should make it possible to understand:
+# 🏗️ Architecture
 
 ```text
-What should be in the box?
-        ↓
-What was actually found?
-        ↓
-What checks were performed?
-        ↓
-What verdict was produced?
-        ↓
-Why?
+React Frontend
+      │
+      │ multipart request
+      ↓
+FastAPI Backend
+      │
+      ├── Order Parser
+      │
+      ├── Product Catalogue
+      │
+      ├── Vision Inspection
+      │       └── OpenAI vision model
+      │
+      ├── Deterministic Verifier
+      │
+      ├── PostgreSQL / Supabase
+      │
+      └── Supabase Storage
 ```
 
-Use the official evidence contract provided by the organisers as the baseline for interoperability with the other Managers.
+### Main components
+
+| Component     | Purpose                                     |
+| ------------- | ------------------------------------------- |
+| React + Vite  | Operator dashboard                          |
+| FastAPI       | Backend API                                 |
+| OpenAI Vision | Visual product observation                  |
+| Pydantic      | Structured data validation                  |
+| PostgreSQL    | Products, captures and verification results |
+| Supabase      | Database and object storage                 |
+| SQLAlchemy    | Database connectivity                       |
+| RLS           | Tenant isolation                            |
+| Python        | Verification and backend logic              |
 
 ---
 
-## PASS · FAIL · UNCERTAIN
+# 🔍 Vision Layer
 
-For individual checks:
+The vision model receives:
 
-* **PASS** — the evidence supports the condition.
-* **FAIL** — the evidence shows the condition is not met.
-* **UNCERTAIN** — the evidence is insufficient for a reliable judgment.
+1. Package image
+2. Authoritative product catalogue
 
-`UNCERTAIN` is not simply a low-confidence PASS.
+The model is instructed to:
+
+* Identify visible catalogue products
+* Estimate observed quantities
+* Provide visual evidence
+* Mark observations as `observed` or `uncertain`
+* Avoid inventing SKUs
+* Avoid making the final packing decision
+
+Example observation:
+
+```json
+{
+  "sku": "CAP-BLU",
+  "quantity": 1,
+  "status": "observed",
+  "evidence": "One blue baseball cap is clearly visible."
+}
+```
+
+The vision layer does **not** decide `SEAL` or `STOP & FIX`.
 
 ---
 
-*CUBE Buildathon · Commerce Context*
+# ⚖️ Deterministic Verification
+
+After visual inspection, the backend compares expected and observed quantities by SKU.
+
+Example:
+
+```text
+Expected:
+TSHIRT-BLK: 2
+CAP-BLU: 1
+
+Observed:
+TSHIRT-BLK: 2
+CAP-BLU: 1
+```
+
+Result:
+
+```text
+SEAL
+```
+
+Another example:
+
+```text
+Expected:
+TSHIRT-BLK: 2
+
+Observed:
+TSHIRT-BLK: 1
+```
+
+Result:
+
+```text
+STOP & FIX
+```
+
+The verifier handles:
+
+* Missing products
+* Extra products
+* Wrong quantities
+* Matching quantities
+* Uncertain observations
+
+---
+
+# ⚠️ Uncertainty
+
+Uncertainty is treated as a first-class verification state.
+
+If the image does not provide enough evidence to confidently identify an item, Pack Manager does not force a positive conclusion.
+
+Example:
+
+```text
+Verification status:
+UNCERTAIN
+
+Operational decision:
+STOP & FIX
+
+Reason:
+Verification is uncertain and requires human review.
+```
+
+This allows the system to distinguish:
+
+```text
+❌ Verified mismatch
+```
+
+from:
+
+```text
+⚠️ Insufficient evidence
+```
+
+---
+
+# ⏳ Fail-Open Behaviour
+
+AI services can fail.
+
+Pack Manager therefore saves the package capture before attempting visual verification.
+
+If the vision call fails:
+
+```text
+Package capture
+      ↓
+Saved successfully
+      ↓
+Vision failure
+      ↓
+PENDING
+      ↓
+Human review
+```
+
+The package does not disappear from the system simply because an AI call failed.
+
+---
+
+# 🔐 Tenant Isolation
+
+Pack Manager uses organization-scoped database records.
+
+Every major table contains an `org_id`:
+
+```text
+organizations
+products
+pack_captures
+verification_results
+```
+
+PostgreSQL Row Level Security is enabled and forced.
+
+The application uses a restricted database role rather than relying on the privileged database administrator role.
+
+The tenant context is applied before querying organization-scoped records.
+
+Example:
+
+```text
+org_demo_alpha
+    ↓
+Alpha products only
+
+org_demo_bravo
+    ↓
+Bravo products only
+```
+
+The isolation was tested using the restricted application database role.
+
+---
+
+# ☁️ Image Storage
+
+Package images are stored in a private Supabase Storage bucket:
+
+```text
+pack-images/
+└── <organization-id>/
+    └── <unique-image-id>.jpg
+```
+
+The backend stores the image in object storage while also creating a package capture record.
+
+Images are not stored as publicly accessible files.
+
+---
+
+# 🖥️ Dashboard
+
+The operator dashboard provides:
+
+* Organization
+* Order ID
+* Expected order lines
+* Package image upload
+* Verification action
+* Final packing decision
+* Expected vs observed quantities
+* Verification status
+* Visual evidence
+
+Example:
+
+```text
+PACKING DECISION
+
+SEAL
+
+CAP-BLU
+Expected and observed quantities match.
+
+Evidence:
+One blue baseball cap is clearly visible.
+
+             1 / 1    PASS
+```
+
+---
+
+# 🧪 Tested Scenarios
+
+The system was tested against multiple packing conditions.
+
+### 1. Correct package
+
+```text
+Expected:
+TSHIRT-BLK:1
+CAP-BLU:1
+SOCK-RED:1
+
+Observed:
+TSHIRT-BLK:1
+CAP-BLU:1
+SOCK-RED:1
+
+Decision:
+SEAL
+```
+
+### 2. Extra item
+
+```text
+Expected:
+TSHIRT-BLK:1
+CAP-BLU:1
+
+Observed:
+TSHIRT-BLK:1
+CAP-BLU:1
+SOCK-RED:1
+
+Decision:
+STOP & FIX
+```
+
+### 3. Wrong quantity
+
+```text
+Expected:
+TSHIRT-BLK:2
+
+Observed:
+TSHIRT-BLK:1
+
+Decision:
+STOP & FIX
+```
+
+### 4. Missing quantity
+
+```text
+Expected:
+SOCK-RED:2
+
+Observed:
+SOCK-RED:1
+
+Decision:
+STOP & FIX
+```
+
+### 5. Uncertain visual evidence
+
+A deliberately blurry/low-confidence package image was tested.
+
+Result:
+
+```text
+Verification:
+UNCERTAIN
+
+Decision:
+STOP & FIX
+```
+
+### 6. Vision failure
+
+The vision model failure path was tested.
+
+Result:
+
+```text
+Decision:
+PENDING
+```
+
+while the package capture remained persisted for review.
+
+---
+
+# 📁 Project Structure
+
+```text
+cube-03-pack-manager/
+│
+├── backend/
+│   ├── app/
+│   │   ├── api/
+│   │   ├── catalog/
+│   │   ├── db/
+│   │   ├── models/
+│   │   ├── schemas/
+│   │   └── services/
+│   │       ├── vision/
+│   │       ├── verifier.py
+│   │       ├── order_parser.py
+│   │       ├── catalog_service.py
+│   │       ├── persistence.py
+│   │       └── storage.py
+│   │
+│   ├── fixtures/
+│   ├── tests/
+│   ├── data/
+│   └── .env
+│
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx
+│   │   └── App.css
+│   └── package.json
+│
+├── data/
+├── RULES.md
+├── GITHUB-GUIDE.md
+└── README.md
+```
+
+---
+
+# 🚀 Local Setup
+
+## Backend
+
+```bash
+cd backend
+
+python3 -m venv .venv
+source .venv/bin/activate
+
+pip install -r requirements.txt
+```
+
+Create:
+
+```text
+backend/.env
+```
+
+with the required OpenAI, database and Supabase configuration.
+
+Start the API:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+API:
+
+```text
+http://127.0.0.1:8000
+```
+
+Health check:
+
+```text
+GET /health
+```
+
+---
+
+## Frontend
+
+```bash
+cd frontend
+
+npm install
+npm run dev
+```
+
+Open the Vite development URL shown in the terminal.
+
+---
+
+# 📡 API
+
+### `GET /health`
+
+Returns:
+
+```json
+{
+  "status": "ok",
+  "service": "pack-manager"
+}
+```
+
+### `POST /verify`
+
+Multipart form fields:
+
+```text
+org_id
+order_id
+order_lines
+image
+```
+
+Example:
+
+```text
+org_id=org_demo_alpha
+order_id=ORD-001
+order_lines=TSHIRT-BLK:1;CAP-BLU:1;SOCK-RED:1
+image=<package photo>
+```
+
+The response contains:
+
+* Capture ID
+* Expected items
+* Observed items
+* Verification checks
+* Verification status
+* Decision
+* Reason
+* Evidence
+
+---
+
+# 🔒 Security Notes
+
+The project uses:
+
+* Organization-scoped database records
+* PostgreSQL RLS
+* Restricted application database role
+* Private object storage
+* Server-side API access to AI services
+* Environment variables for credentials
+
+Production deployment would additionally require authenticated user identity and deriving the organization from the authenticated session rather than trusting a client-provided `org_id`.
+
+---
+
+# 🎯 Design Principles
+
+### AI observes. Code verifies.
+
+The vision model should answer:
+
+> “What can I actually see?”
+
+The deterministic verifier answers:
+
+> “Does what we observed satisfy the order?”
+
+This makes the final operational decision auditable and predictable.
+
+### Don't guess.
+
+When visual evidence is insufficient:
+
+```text
+UNCERTAIN
+```
+
+not:
+
+```text
+probably correct
+```
+
+### Fail safely.
+
+If verification cannot be completed:
+
+```text
+PENDING
+```
+
+rather than silently allowing the package to proceed.
+
+---
+
+# 🔮 Future Improvements
+
+Potential next steps include:
+
+* Reference images for visually similar SKUs
+* Operator correction/override workflow
+* Authenticated organization identity
+* Signed image URLs with authorization checks
+* Order management integration
+* Barcode/QR verification
+* Multi-image package inspection
+* Historical accuracy dashboards
+* Human-in-the-loop review queue
+* Production deployment and monitoring
+
+---
+
+# 🏆 Hackathon Summary
+
+Pack Manager turns a simple package photograph into an actionable packing decision:
+
+```text
+PHOTO
+  ↓
+VISION
+  ↓
+EVIDENCE
+  ↓
+DETERMINISTIC VERIFICATION
+  ↓
+SEAL / STOP & FIX
+```
+
+The goal is not to replace the warehouse operator.
+
+The goal is to give the operator a reliable verification layer **before the box is sealed**.

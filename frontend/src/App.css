@@ -100,9 +100,11 @@ input {
 }
 
 .subtitle {
-  max-width: 600px;
+  /* max-width: 600px; */
   color: #8e949d;
   line-height: 1.6;
+  text-align: center;
+
 }
 
 .workspace {
