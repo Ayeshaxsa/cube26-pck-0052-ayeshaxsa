@@ -1,455 +1,270 @@
-# 📦 Pack Manager
+# Pack Manager — AI Packing Verification Agent
 
-### AI-powered outbound packing verification
+> **AI observes. Deterministic logic verifies. Operators decide before the package leaves the warehouse.**
 
-Pack Manager is an AI-assisted packing verification system that checks an open package against the customer's expected order **before the package is sealed**.
+Pack Manager is an AI-powered outbound packing verification system that checks whether the contents of a package match the customer's order **before the package is sealed**.
 
 The system combines computer vision with deterministic verification logic to identify:
 
-* ✅ Correct items
-* ❌ Missing items
-* ❌ Unexpected/extra items
-* ❌ Wrong quantities
-* ⚠️ Uncertain visual observations
-* ⏳ Failed AI verification requiring human review
+* Missing items
+* Wrong items
+* Unexpected extra items
+* Quantity mismatches
+* Visually uncertain items
 
-The final operational decision is either:
+The final operational decision is:
 
-> **SEAL** — all required items were verified
+* **SEAL** — all required items and quantities are verified.
+* **STOP & FIX** — a packing issue is detected.
+* **PENDING REVIEW** — automated verification could not be completed and requires operator review.
+
+---
+
+## Problem Understanding
+
+In an outbound warehouse workflow, a package can be incorrectly sealed because of:
+
+* A missing product
+* The wrong product being packed
+* Incorrect quantities
+* An unexpected extra item
+* Visually ambiguous evidence
+* Automated verification failures
+
+A useful packing verification system therefore cannot simply ask an AI model:
+
+> "Is this package correct?"
+
+Instead, the system needs to separate **visual observation** from **business verification**.
+
+Pack Manager follows this principle:
+
+```text
+Package Image
+     ↓
+AI Vision Observation
+     ↓
+Deterministic Order Verification
+     ↓
+Evidence + Verification Status
+     ↓
+Operational Decision
+```
+
+This makes the final decision explainable and avoids relying on the vision model to perform business-critical quantity and order logic.
+
+---
+
+## Solution Overview
+
+Pack Manager follows a **Perceive → Verify → Act** architecture.
+
+### 1. Perceive
+
+A vision model receives:
+
+* The package image
+* The organization's product catalogue
+* Product descriptions and visual attributes
+
+The model identifies products visible in the package and returns structured observations.
+
+For each observed product, the system records:
+
+```text
+SKU
+Observed quantity
+Observation status
+Visual evidence
+```
+
+The model is explicitly instructed not to invent products or make the final order decision.
+
+### 2. Verify
+
+The backend compares the AI observations against the customer's expected order.
+
+The verification engine performs deterministic checks for every SKU:
+
+```text
+Expected quantity
+        vs
+Observed quantity
+```
+
+It identifies:
+
+* PASS
+* FAIL
+* UNCERTAIN
+
+Examples:
+
+```text
+Expected: TSHIRT-BLK × 2
+Observed: TSHIRT-BLK × 2
+→ PASS
+```
+
+```text
+Expected: CAP-BLU × 1
+Observed: CAP-BLU × 0
+→ FAIL — Missing item
+```
+
+```text
+Expected: CAP-BLU × 1
+Observed: SOCK-RED × 1
+→ FAIL — Wrong/unexpected item
+```
+
+### 3. Act
+
+The verification result is converted into an operational decision:
+
+```text
+All checks pass
+    ↓
+SEAL
+```
+
+```text
+Any verification failure
+    ↓
+STOP & FIX
+```
+
+```text
+Insufficient/uncertain evidence
+    ↓
+UNCERTAIN
+    ↓
+STOP & FIX / Human Review
+```
+
+If the AI service fails or times out, the capture is still persisted and the result is marked as pending rather than silently losing the packing attempt.
+
+---
+
+# Architecture
+
+```text
+┌──────────────────────────┐
+│      React Dashboard     │
+│                          │
+│ Order + Image Upload     │
+│ Verification Results     │
+└────────────┬─────────────┘
+             │
+             │ multipart request
+             ▼
+┌──────────────────────────┐
+│       FastAPI API        │
+│                          │
+│ Capture + Orchestration  │
+└────────────┬─────────────┘
+             │
+             ├──────────────► PostgreSQL
+             │                Orders / Products /
+             │                Captures / Results
+             │
+             ├──────────────► Supabase Storage
+             │                Package Images
+             │
+             ▼
+┌──────────────────────────┐
+│     Vision Layer         │
+│                          │
+│ OpenAI Vision Model      │
+│ Catalogue-aware prompt   │
+└────────────┬─────────────┘
+             │
+             │ structured observations
+             ▼
+┌──────────────────────────┐
+│ Deterministic Verifier   │
+│                          │
+│ Expected vs Observed     │
+│ Quantity + SKU checks    │
+└────────────┬─────────────┘
+             │
+             ▼
+┌──────────────────────────┐
+│ Operational Decision     │
+│                          │
+│ SEAL / STOP & FIX /      │
+│ PENDING                  │
+└──────────────────────────┘
+```
+
+For the detailed technical architecture, see [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
+---
+
+# Key Engineering Decisions
+
+## AI observes, code verifies
+
+The vision model is responsible for visual perception.
+
+It does **not** decide whether the order is correct.
+
+The backend performs the actual comparison between expected and observed quantities.
+
+This keeps business-critical verification deterministic and explainable.
+
+## Uncertainty is first-class
+
+The system does not force a confident answer when the image does not provide enough evidence.
+
+An observation can be:
+
+```text
+observed
+```
 
 or
 
-> **STOP & FIX** — something is missing, incorrect, uncertain, or requires review
-
----
-
-## 🎯 Problem
-
-Packing mistakes are expensive.
-
-A warehouse operator may accidentally:
-
-* Pick the wrong SKU
-* Forget an item
-* Pick the wrong quantity
-* Add an unexpected item
-* Seal a package when the visual evidence is unclear
-
-Traditional workflows often depend on manual checking immediately before shipment.
-
-Pack Manager adds an AI-assisted verification step:
-
 ```text
-Open package
-     ↓
-Take photo
-     ↓
-AI identifies visible products
-     ↓
-Compare against order
-     ↓
-Generate evidence
-     ↓
-SEAL / STOP & FIX
+uncertain
 ```
 
----
+An uncertain verification is surfaced to the operator instead of being silently treated as a successful match.
 
-# 🧠 How It Works
+## Fail-open processing
 
-Pack Manager follows a simple three-stage architecture:
+If the vision service fails, times out, or returns an unusable response:
 
-```text
-              ┌──────────────────┐
-              │   Package Photo  │
-              └────────┬─────────┘
-                       ↓
-              ┌──────────────────┐
-              │ Vision Inspection│
-              │      AI          │
-              └────────┬─────────┘
-                       ↓
-              ┌──────────────────┐
-              │   Observations   │
-              │ SKU + quantity   │
-              │ + evidence       │
-              └────────┬─────────┘
-                       ↓
-              ┌──────────────────┐
-              │ Deterministic    │
-              │ Verification     │
-              └────────┬─────────┘
-                       ↓
-          ┌────────────┴────────────┐
-          ↓                         ↓
-       VERIFIED                  UNCERTAIN
-          ↓                         ↓
-     ┌────┴────┐              STOP & FIX
-     ↓         ↓
-   MATCH     MISMATCH
-     ↓         ↓
-   SEAL    STOP & FIX
-```
+1. The package capture has already been persisted.
+2. The verification result is recorded as pending.
+3. The operator can review the package instead of losing the verification attempt.
 
-The AI is responsible for **visual observation**.
+This prevents an external model failure from silently dropping warehouse events.
 
-The application code is responsible for the **final verification decision**.
+## Tenant isolation
 
-This separation prevents the vision model from independently deciding whether an order should ship.
+The backend uses PostgreSQL Row Level Security (RLS).
 
----
-
-# 🏗️ Architecture
-
-```text
-React Frontend
-      │
-      │ multipart request
-      ↓
-FastAPI Backend
-      │
-      ├── Order Parser
-      │
-      ├── Product Catalogue
-      │
-      ├── Vision Inspection
-      │       └── OpenAI vision model
-      │
-      ├── Deterministic Verifier
-      │
-      ├── PostgreSQL / Supabase
-      │
-      └── Supabase Storage
-```
-
-### Main components
-
-| Component     | Purpose                                     |
-| ------------- | ------------------------------------------- |
-| React + Vite  | Operator dashboard                          |
-| FastAPI       | Backend API                                 |
-| OpenAI Vision | Visual product observation                  |
-| Pydantic      | Structured data validation                  |
-| PostgreSQL    | Products, captures and verification results |
-| Supabase      | Database and object storage                 |
-| SQLAlchemy    | Database connectivity                       |
-| RLS           | Tenant isolation                            |
-| Python        | Verification and backend logic              |
-
----
-
-# 🔍 Vision Layer
-
-The vision model receives:
-
-1. Package image
-2. Authoritative product catalogue
-
-The model is instructed to:
-
-* Identify visible catalogue products
-* Estimate observed quantities
-* Provide visual evidence
-* Mark observations as `observed` or `uncertain`
-* Avoid inventing SKUs
-* Avoid making the final packing decision
-
-Example observation:
-
-```json
-{
-  "sku": "CAP-BLU",
-  "quantity": 1,
-  "status": "observed",
-  "evidence": "One blue baseball cap is clearly visible."
-}
-```
-
-The vision layer does **not** decide `SEAL` or `STOP & FIX`.
-
----
-
-# ⚖️ Deterministic Verification
-
-After visual inspection, the backend compares expected and observed quantities by SKU.
-
-Example:
-
-```text
-Expected:
-TSHIRT-BLK: 2
-CAP-BLU: 1
-
-Observed:
-TSHIRT-BLK: 2
-CAP-BLU: 1
-```
-
-Result:
-
-```text
-SEAL
-```
-
-Another example:
-
-```text
-Expected:
-TSHIRT-BLK: 2
-
-Observed:
-TSHIRT-BLK: 1
-```
-
-Result:
-
-```text
-STOP & FIX
-```
-
-The verifier handles:
-
-* Missing products
-* Extra products
-* Wrong quantities
-* Matching quantities
-* Uncertain observations
-
----
-
-# ⚠️ Uncertainty
-
-Uncertainty is treated as a first-class verification state.
-
-If the image does not provide enough evidence to confidently identify an item, Pack Manager does not force a positive conclusion.
-
-Example:
-
-```text
-Verification status:
-UNCERTAIN
-
-Operational decision:
-STOP & FIX
-
-Reason:
-Verification is uncertain and requires human review.
-```
-
-This allows the system to distinguish:
-
-```text
-❌ Verified mismatch
-```
-
-from:
-
-```text
-⚠️ Insufficient evidence
-```
-
----
-
-# ⏳ Fail-Open Behaviour
-
-AI services can fail.
-
-Pack Manager therefore saves the package capture before attempting visual verification.
-
-If the vision call fails:
-
-```text
-Package capture
-      ↓
-Saved successfully
-      ↓
-Vision failure
-      ↓
-PENDING
-      ↓
-Human review
-```
-
-The package does not disappear from the system simply because an AI call failed.
-
----
-
-# 🔐 Tenant Isolation
-
-Pack Manager uses organization-scoped database records.
-
-Every major table contains an `org_id`:
-
-```text
-organizations
-products
-pack_captures
-verification_results
-```
-
-PostgreSQL Row Level Security is enabled and forced.
-
-The application uses a restricted database role rather than relying on the privileged database administrator role.
-
-The tenant context is applied before querying organization-scoped records.
-
-Example:
+Data is scoped using an organization context:
 
 ```text
 org_demo_alpha
-    ↓
-Alpha products only
-
 org_demo_bravo
-    ↓
-Bravo products only
 ```
 
-The isolation was tested using the restricted application database role.
+Application database access uses a restricted database role rather than a superuser connection.
+
+This prevents application queries from freely reading another organization's catalogue, captures, or verification results.
+
+## Authoritative catalogue
+
+The vision prompt is generated from the organization's catalogue stored in PostgreSQL.
+
+The model is not expected to remember SKU information or invent products.
 
 ---
 
-# ☁️ Image Storage
-
-Package images are stored in a private Supabase Storage bucket:
-
-```text
-pack-images/
-└── <organization-id>/
-    └── <unique-image-id>.jpg
-```
-
-The backend stores the image in object storage while also creating a package capture record.
-
-Images are not stored as publicly accessible files.
-
----
-
-# 🖥️ Dashboard
-
-The operator dashboard provides:
-
-* Organization
-* Order ID
-* Expected order lines
-* Package image upload
-* Verification action
-* Final packing decision
-* Expected vs observed quantities
-* Verification status
-* Visual evidence
-
-Example:
-
-```text
-PACKING DECISION
-
-SEAL
-
-CAP-BLU
-Expected and observed quantities match.
-
-Evidence:
-One blue baseball cap is clearly visible.
-
-             1 / 1    PASS
-```
-
----
-
-# 🧪 Tested Scenarios
-
-The system was tested against multiple packing conditions.
-
-### 1. Correct package
-
-```text
-Expected:
-TSHIRT-BLK:1
-CAP-BLU:1
-SOCK-RED:1
-
-Observed:
-TSHIRT-BLK:1
-CAP-BLU:1
-SOCK-RED:1
-
-Decision:
-SEAL
-```
-
-### 2. Extra item
-
-```text
-Expected:
-TSHIRT-BLK:1
-CAP-BLU:1
-
-Observed:
-TSHIRT-BLK:1
-CAP-BLU:1
-SOCK-RED:1
-
-Decision:
-STOP & FIX
-```
-
-### 3. Wrong quantity
-
-```text
-Expected:
-TSHIRT-BLK:2
-
-Observed:
-TSHIRT-BLK:1
-
-Decision:
-STOP & FIX
-```
-
-### 4. Missing quantity
-
-```text
-Expected:
-SOCK-RED:2
-
-Observed:
-SOCK-RED:1
-
-Decision:
-STOP & FIX
-```
-
-### 5. Uncertain visual evidence
-
-A deliberately blurry/low-confidence package image was tested.
-
-Result:
-
-```text
-Verification:
-UNCERTAIN
-
-Decision:
-STOP & FIX
-```
-
-### 6. Vision failure
-
-The vision model failure path was tested.
-
-Result:
-
-```text
-Decision:
-PENDING
-```
-
-while the package capture remained persisted for review.
-
----
-
-# 📁 Project Structure
+# Project Structure
 
 ```text
 cube-03-pack-manager/
@@ -471,24 +286,32 @@ cube-03-pack-manager/
 │   │
 │   ├── fixtures/
 │   ├── tests/
-│   ├── data/
+│   ├── requirements.txt
 │   └── .env
 │
 ├── frontend/
-│   ├── src/
-│   │   ├── App.jsx
-│   │   └── App.css
-│   └── package.json
+│   └── src/
 │
 ├── data/
+│
+├── README.md
+├── ARCHITECTURE.md
 ├── RULES.md
-├── GITHUB-GUIDE.md
-└── README.md
+└── GITHUB-GUIDE.md
 ```
 
 ---
 
-# 🚀 Local Setup
+# Setup
+
+## Requirements
+
+* Python 3.11+
+* Node.js
+* PostgreSQL / Supabase
+* OpenAI API key
+
+---
 
 ## Backend
 
@@ -507,7 +330,19 @@ Create:
 backend/.env
 ```
 
-with the required OpenAI, database and Supabase configuration.
+with the required environment variables:
+
+```env
+OPENAI_API_KEY=your_openai_key
+OPENAI_VISION_MODEL=your_vision_model
+
+DATABASE_URL=your_postgresql_connection_string
+
+SUPABASE_URL=your_supabase_project_url
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
+```
+
+Do not commit `.env` or any API keys.
 
 Start the API:
 
@@ -515,7 +350,7 @@ Start the API:
 uvicorn app.main:app --reload
 ```
 
-API:
+The API should be available at:
 
 ```text
 http://127.0.0.1:8000
@@ -529,153 +364,201 @@ GET /health
 
 ---
 
-## Frontend
+# Frontend
 
 ```bash
 cd frontend
-
 npm install
 npm run dev
 ```
 
-Open the Vite development URL shown in the terminal.
+Open the Vite URL shown by the terminal.
+
+The frontend allows the operator to:
+
+1. Select the organization.
+2. Enter an order.
+3. Upload the package image.
+4. Run verification.
+5. Inspect the decision and supporting evidence.
 
 ---
 
-# 📡 API
+# Usage
 
-### `GET /health`
-
-Returns:
-
-```json
-{
-  "status": "ok",
-  "service": "pack-manager"
-}
-```
-
-### `POST /verify`
-
-Multipart form fields:
+A typical verification request contains:
 
 ```text
-org_id
-order_id
-order_lines
-image
+Organization
+Order ID
+Order lines
+Package image
 ```
 
-Example:
+Example order:
 
 ```text
-org_id=org_demo_alpha
-order_id=ORD-001
-order_lines=TSHIRT-BLK:1;CAP-BLU:1;SOCK-RED:1
-image=<package photo>
+TSHIRT-BLK:1;CAP-BLU:1;SOCK-RED:1
 ```
 
-The response contains:
+The system then:
 
-* Capture ID
-* Expected items
-* Observed items
-* Verification checks
-* Verification status
-* Decision
-* Reason
-* Evidence
-
----
-
-# 🔒 Security Notes
-
-The project uses:
-
-* Organization-scoped database records
-* PostgreSQL RLS
-* Restricted application database role
-* Private object storage
-* Server-side API access to AI services
-* Environment variables for credentials
-
-Production deployment would additionally require authenticated user identity and deriving the organization from the authenticated session rather than trusting a client-provided `org_id`.
+```text
+1. Saves the package capture
+2. Loads the organization's catalogue
+3. Sends the package image + catalogue context to the vision model
+4. Receives structured observations
+5. Compares observations with the order
+6. Generates checks
+7. Produces an operational decision
+8. Displays the result and evidence
+```
 
 ---
 
-# 🎯 Design Principles
+# Example Results
 
-### AI observes. Code verifies.
+### Correct package
 
-The vision model should answer:
+```text
+TSHIRT-BLK    1 / 1    PASS
+CAP-BLU       1 / 1    PASS
+SOCK-RED      1 / 1    PASS
 
-> “What can I actually see?”
+Decision: SEAL
+```
 
-The deterministic verifier answers:
+### Missing item
 
-> “Does what we observed satisfy the order?”
+```text
+TSHIRT-BLK    1 / 1    PASS
+CAP-BLU       0 / 1    FAIL
 
-This makes the final operational decision auditable and predictable.
+Decision: STOP & FIX
+```
 
-### Don't guess.
+### Unexpected item
+
+```text
+Expected:
+CAP-BLU × 1
+
+Observed:
+SOCK-RED × 1
+
+Decision: STOP & FIX
+```
+
+### Uncertain image
 
 When visual evidence is insufficient:
 
 ```text
-UNCERTAIN
+Verification: UNCERTAIN
+
+Decision: STOP & FIX
+Reason: Human review required.
 ```
 
-not:
+The system intentionally avoids turning weak visual evidence into a confident PASS.
+
+---
+
+# Reliability
+
+The implementation was tested against several packing scenarios:
+
+* Correct package
+* Missing item
+* Extra item
+* Wrong quantity
+* Multiple items
+* Uncertain/blurry image
+* Vision/model failure
+* Cross-organization database isolation
+
+The verification engine itself is deterministic once structured observations have been produced.
+
+---
+
+# Assumptions
+
+* The product catalogue contains the products that can be packed.
+* SKU identifiers are the authoritative product identifiers.
+* Package images provide enough visual information for the vision model to identify products.
+* The order lines supplied to the API represent the expected contents of the package.
+* Human operators remain responsible for resolving uncertain cases.
+
+---
+
+# Limitations
+
+### Product recognition
+
+Vision accuracy depends on image quality, camera angle, lighting, occlusion, and how visually distinguishable products are.
+
+### Quantity counting
+
+Highly overlapping or partially hidden products may be difficult to count reliably.
+
+### Demo authentication
+
+The current demo uses an organization identifier supplied by the application rather than a full production authentication/authorization system.
+
+A production deployment would derive the organization from the authenticated user's session.
+
+### Human review
+
+The system deliberately allows uncertain and pending outcomes. It is designed as a verification aid rather than a replacement for every warehouse decision.
+
+### Storage security
+
+Package images are stored in a private Supabase Storage bucket. The current application primarily uses storage for persistence; a production implementation would add fully authenticated image retrieval with authorization checks and signed URLs.
+
+---
+
+# Demo
+
+Live demo:
+
+**https://cube26-pck-0052-ayeshaxsa.vercel.app/**
+
+Repository:
+
+**https://github.com/Cube-Build-A-Thon/cube-03-pack-manager**
+
+Demo video:
+
+**https://drive.google.com/file/d/1F4H0JkwpKJuZE7oNiKrZMAwAdo4gNyAS/view?usp=sharing**
+
+The recommended demo flow is:
 
 ```text
-probably correct
-```
+Correct package
+      ↓
+SEAL
 
-### Fail safely.
+Incorrect package
+      ↓
+STOP & FIX
 
-If verification cannot be completed:
+Unclear evidence
+      ↓
+UNCERTAIN / Human Review
 
-```text
+Model failure
+      ↓
 PENDING
 ```
 
-rather than silently allowing the package to proceed.
-
 ---
 
-# 🔮 Future Improvements
+# Design Principle
 
-Potential next steps include:
+The core design principle is:
 
-* Reference images for visually similar SKUs
-* Operator correction/override workflow
-* Authenticated organization identity
-* Signed image URLs with authorization checks
-* Order management integration
-* Barcode/QR verification
-* Multi-image package inspection
-* Historical accuracy dashboards
-* Human-in-the-loop review queue
-* Production deployment and monitoring
+> **AI observes. Deterministic logic verifies. Humans handle uncertainty.**
 
----
+The goal is not to make the AI sound confident.
 
-# 🏆 Hackathon Summary
-
-Pack Manager turns a simple package photograph into an actionable packing decision:
-
-```text
-PHOTO
-  ↓
-VISION
-  ↓
-EVIDENCE
-  ↓
-DETERMINISTIC VERIFICATION
-  ↓
-SEAL / STOP & FIX
-```
-
-The goal is not to replace the warehouse operator.
-
-The goal is to give the operator a reliable verification layer **before the box is sealed**.
+The goal is to make the packing decision **traceable, explainable, and operationally useful**.
